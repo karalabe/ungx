@@ -58,12 +58,14 @@ func main() {
 		mappings[hash.Name()] = pkg.Gx.Path
 		versions[pkg.Gx.Path]++
 	}
-	// Rewrite any non-clashing import paths
+	// Move the package from hash to canonical path
+	rewrite := make(map[string]string)
+
+	log.Printf("Converting gx dependencies to canonical paths")
 	for hash, path := range mappings {
 		if versions[path] > 1 {
 			continue
 		}
-		// Move the package from hash to canonical path
 		if err := os.MkdirAll(filepath.Join("vendor", filepath.Dir(path)), 0700); err != nil {
 			log.Fatalf("Failed to create canonical path: %v", err)
 		}
@@ -72,40 +74,45 @@ func main() {
 			log.Fatalf("Failed to list package contents: %v", err)
 		}
 		for _, dir := range dirs {
-			log.Printf("Rewriting gx/ipfs/%s/%s to %s/%s", hash, dir.Name(), filepath.Dir(path), dir.Name())
-			if err := os.Rename(filepath.Join(gxpkgs, hash, dir.Name()), filepath.Join("vendor", filepath.Dir(path), dir.Name())); err != nil {
+			log.Printf("Rewriting gx/ipfs/%s/%s to %s", hash, dir.Name(), path)
+			if err := os.Rename(filepath.Join(gxpkgs, hash, dir.Name()), filepath.Join("vendor", path)); err != nil {
 				log.Fatalf("Failed to move canonical package: %v", err)
 			}
+			rewrite["gx/ipfs/"+hash+"/"+dir.Name()] = path
 		}
 		if err := os.Remove(filepath.Join(gxpkgs, hash)); err != nil {
 			log.Fatalf("Failed to remote gx leftover: %v", err)
 		}
-		// Rewrite packages to their canonical paths
-		if err := filepath.Walk(".", func(fp string, fi os.FileInfo, err error) error {
-			// Abort if any error occurred, descend into directories
+	}
+	// Rewrite packages to their canonical paths
+	log.Printf("Rewriting import statements to canonical paths")
+
+	if err := filepath.Walk(".", func(fp string, fi os.FileInfo, err error) error {
+		// Abort if any error occurred, descend into directories
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() {
+			return nil
+		}
+		// Replace the relevant import path in all Go files
+		if strings.HasSuffix(fi.Name(), ".go") {
+			oldblob, err := ioutil.ReadFile(fp)
 			if err != nil {
 				return err
 			}
-			if fi.IsDir() {
-				return nil
+			newblob := oldblob
+			for gxpath, gopath := range rewrite {
+				newblob = bytes.Replace(newblob, []byte(gxpath), []byte(gopath), -1)
 			}
-			// Replace the relevant import path in all Go files
-			if strings.HasSuffix(fi.Name(), ".go") {
-				oldblob, err := ioutil.ReadFile(fp)
-				if err != nil {
+			if !bytes.Equal(oldblob, newblob) {
+				if err = ioutil.WriteFile(fp, newblob, 0); err != nil {
 					return err
 				}
-				newblob := bytes.Replace(oldblob, []byte("gx/ipfs/"+hash), []byte(filepath.Dir(path)), -1)
-
-				if !bytes.Equal(oldblob, newblob) {
-					if err = ioutil.WriteFile(fp, newblob, 0); err != nil {
-						return err
-					}
-				}
 			}
-			return nil
-		}); err != nil {
-			log.Fatalf("Failed to rewrite import paths: %v", err)
 		}
+		return nil
+	}); err != nil {
+		log.Fatalf("Failed to rewrite import paths: %v", err)
 	}
 }

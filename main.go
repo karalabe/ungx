@@ -7,8 +7,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +18,20 @@ import (
 )
 
 func main() {
+	// Create a temporary Go workspace to download canonical packages into
+	workspace, err := ioutil.TempDir("", "")
+	if err != nil {
+		log.Fatalf("Failed to create temporary workspace: %v", err)
+	}
+	defer os.RemoveAll(workspace)
+
+	// Resolve the current package's import path
+	root, err := exec.Command("go", "list").CombinedOutput()
+	if err != nil {
+		log.Fatalf("Failed to resolve package import path: %v", err)
+	}
+	root = bytes.TrimSpace(root)
+
 	// Retrieve all the gx dependencies into the local vendor folder
 	deps := exec.Command("gx", "install", "--local")
 	deps.Stdout = os.Stdout
@@ -63,25 +79,52 @@ func main() {
 
 	log.Printf("Converting gx dependencies to canonical paths")
 	for hash, path := range mappings {
+		// Clashing dependencies are a strange beats: in theory they would need to be
+		// embedded into gxlibs to allow directly importing them from calling code. In
+		// practice however, if the package enforces a canonical path, Go will reject
+		// building it in gxlibs but won't care in vendor. Since we can't move them to
+		// gxlibs due to canonical restrictions, and can't move them to vendor due to
+		// clashes, we'll just leave them as are.
 		if versions[path] > 1 {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Join("vendor", filepath.Dir(path)), 0700); err != nil {
-			log.Fatalf("Failed to create canonical path: %v", err)
-		}
-		dirs, err := ioutil.ReadDir(filepath.Join(gxpkgs, hash))
-		if err != nil {
-			log.Fatalf("Failed to list package contents: %v", err)
-		}
-		for _, dir := range dirs {
-			log.Printf("Rewriting gx/ipfs/%s/%s to %s", hash, dir.Name(), path)
-			if err := os.Rename(filepath.Join(gxpkgs, hash, dir.Name()), filepath.Join("vendor", path)); err != nil {
-				log.Fatalf("Failed to move canonical package: %v", err)
+		// Any gx-based dependency should be embedded directly to allow library reuse
+		if shouldEmbed(workspace, path) {
+			if err := os.MkdirAll(filepath.Join("gxlibs", filepath.Dir(path)), 0700); err != nil {
+				log.Fatalf("Failed to create canonical embed path: %v", err)
 			}
-			rewrite["gx/ipfs/"+hash+"/"+dir.Name()] = path
+			dirs, err := ioutil.ReadDir(filepath.Join(gxpkgs, hash))
+			if err != nil {
+				log.Fatalf("Failed to list package contents: %v", err)
+			}
+			for _, dir := range dirs {
+				log.Printf("Embedding gx/ipfs/%s/%s to gxlibs/%s", hash, dir.Name(), path)
+				if err := os.Rename(filepath.Join(gxpkgs, hash, dir.Name()), filepath.Join("gxlibs", path)); err != nil {
+					log.Fatalf("Failed to move embedded package: %v", err)
+				}
+				rewrite["gx/ipfs/"+hash+"/"+dir.Name()] = string(root) + "/gxlibs/" + path
+				rewrite[path] = string(root) + "/gxlibs/" + path
+			}
+		} else {
+			// Non-clashing plain Go dependencies can be vendored in
+			if err := os.MkdirAll(filepath.Join("vendor", filepath.Dir(path)), 0700); err != nil {
+				log.Fatalf("Failed to create canonical vendor path: %v", err)
+			}
+			dirs, err := ioutil.ReadDir(filepath.Join(gxpkgs, hash))
+			if err != nil {
+				log.Fatalf("Failed to list package contents: %v", err)
+			}
+			for _, dir := range dirs {
+				log.Printf("Vendoring gx/ipfs/%s/%s to vendor/%s", hash, dir.Name(), path)
+				if err := os.Rename(filepath.Join(gxpkgs, hash, dir.Name()), filepath.Join("vendor", path)); err != nil {
+					log.Fatalf("Failed to move vendored package: %v", err)
+				}
+				rewrite["gx/ipfs/"+hash+"/"+dir.Name()] = path
+			}
 		}
+		// Delete the empty hash dependency path
 		if err := os.Remove(filepath.Join(gxpkgs, hash)); err != nil {
-			log.Fatalf("Failed to remote gx leftover: %v", err)
+			log.Fatalf("Failed to remove gx leftover: %v", err)
 		}
 	}
 	// Rewrite packages to their canonical paths
@@ -103,7 +146,7 @@ func main() {
 			}
 			newblob := oldblob
 			for gxpath, gopath := range rewrite {
-				newblob = bytes.Replace(newblob, []byte(gxpath), []byte(gopath), -1)
+				newblob = bytes.Replace(newblob, []byte("\""+gxpath), []byte("\""+gopath), -1)
 			}
 			if !bytes.Equal(oldblob, newblob) {
 				if err = ioutil.WriteFile(fp, newblob, 0); err != nil {
@@ -115,4 +158,37 @@ func main() {
 	}); err != nil {
 		log.Fatalf("Failed to rewrite import paths: %v", err)
 	}
+}
+
+// shouldEmbed returns whether a package identified by its import path should be
+// embedded directly into a ungx-ed package or whether vendoring is enough. The
+// deciding factor is whether the package's canonical version is gx based or not,
+// since we can't vendor gx packages.
+func shouldEmbed(gopath string, path string) bool {
+	log.Printf("Deciding whether to vendor or embed %s", path)
+
+	// If the import path points to GitHub, we can cheat and directly decide
+	if strings.HasPrefix(path, "github.com/") {
+		// Try to retrieve the gx package spec, embed on hard failure
+		res, err := http.Get(fmt.Sprintf("https://%s/master/package.json", strings.Replace(path, "github.com", "raw.githubusercontent.com", 1)))
+		if err != nil {
+			return true
+		}
+		defer res.Body.Close()
+
+		// If the file exists, assume its a gx based project, otherwise vendor
+		return res.StatusCode == http.StatusOK
+	}
+	// Non-github package or something failed, we need to download the canonical code
+	get := exec.Command("go", "get", "-d", path+"/...")
+	get.Stdout = os.Stdout
+	get.Stderr = os.Stderr
+	get.Env = append(os.Environ(), "GOPATH="+gopath)
+
+	if err := get.Run(); err == nil {
+		if _, err := os.Stat(filepath.Join(gopath, "src", path, "package.json")); err != nil {
+			return false
+		}
+	}
+	return true
 }

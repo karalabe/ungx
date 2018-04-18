@@ -14,13 +14,14 @@ TL;DR `gx` is an amazing project, but until the Go ecosystem builds a tool that 
 
 With the *why* out of the way, lets see *how* `ungx` helps make our lives easier. The goal of `ungx` is to take a `gx` based package/repository, resolve all the dependencies in it via `gx` and then rewrite/vendor all the dependencies into legacy Go style.
 
-It's operation is fairly trivial:
+It's operation is fairly simplistic:
 
  * Run `gx install --local` to fetch all `gx` dependencies and vendor them in with hashes.
  * Find all `gx` dependencies that do not have multiple versions (we can't rewrite clashes).
  * Vendor all non-clashing plain Go dependencies under `vendor` with their canonical path.
  * Embed all non-clashing `gx` dependencies under `gxdeps` with their canonical path.
  * Rewrite all import statements for all non-clashing dependencies to the new paths.
+ * Optionally rewrite the root import path to a custom one specified via `--fork`.
 
 **Note, it will overwrite your original checked out repo!**
 
@@ -67,7 +68,7 @@ $ ungx
 
 And voila, we have a fork of `go-ipfs` that does not contain cryptic hash import paths and is a joy to work with. If you want to update your fork to a new version, repeat the above procedure in a pristine GOPATH and overwrite your old fork with the newly generated one.
 
-*Note, if you want to publish your dependency publicly, you'll need to rewrite all the package's internal imports to your fork paths.*
+*Note, if you want to publish your dependency publicly, you'll need to rewrite all the package's internal imports to your fork paths (e.g. `ungx --fork=github.com/myipfs/go-ipfs`). and manually move the repository contents to `$GOPATH/github.com/myipfs/go-ipfs`.*
 
 ## Disclaimer
 

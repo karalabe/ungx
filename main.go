@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -17,7 +18,14 @@ import (
 	"strings"
 )
 
+// fork defines an optional import path to rewrite the main package to. It's main
+// use is when a gx package is forked into a different repo and avoids having to
+// do an extra rewrite after copying the code.
+var fork = flag.String("fork", "", "Optional root import path to rewrite to")
+
 func main() {
+	flag.Parse()
+
 	// Create a temporary Go workspace to download canonical packages into
 	workspace, err := ioutil.TempDir("", "")
 	if err != nil {
@@ -147,6 +155,9 @@ func main() {
 			newblob := oldblob
 			for gxpath, gopath := range rewrite {
 				newblob = bytes.Replace(newblob, []byte("\""+gxpath), []byte("\""+gopath), -1)
+			}
+			if *fork != "" {
+				newblob = bytes.Replace(newblob, []byte("\""+string(root)+"/"), []byte("\""+*fork+"/"), -1)
 			}
 			if !bytes.Equal(oldblob, newblob) {
 				if err = ioutil.WriteFile(fp, newblob, 0); err != nil {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -87,13 +88,17 @@ func main() {
 
 	log.Printf("Converting gx dependencies to canonical paths")
 	for hash, path := range mappings {
-		// Clashing dependencies are a strange beats: in theory they would need to be
-		// embedded into gxlibs to allow directly importing them from calling code. In
-		// practice however, if the package enforces a canonical path, Go will reject
-		// building it in gxlibs but won't care in vendor. Since we can't move them to
-		// gxlibs due to canonical restrictions, and can't move them to vendor due to
-		// clashes, we'll just leave them as are.
+		// Clashing dependencies cannot be rewritten, so they need to be embedded
 		if versions[path] > 1 {
+			if err := os.MkdirAll(filepath.Join("gxlibs", "ipfs"), 0700); err != nil {
+				log.Fatalf("Failed to create canonical embed path: %v", err)
+			}
+			log.Printf("Embedding gx/ipfs/%s to gxlibs/ipfs/%s", hash, hash)
+			if err := os.Rename(filepath.Join(gxpkgs, hash), filepath.Join("gxlibs", "ipfs", hash)); err != nil {
+				log.Fatalf("Failed to move embedded package: %v", err)
+			}
+			rewrite["gx/ipfs/"+hash] = string(root) + "/gxlibs/ipfs/" + hash
+
 			continue
 		}
 		// Any gx-based dependency should be embedded directly to allow library reuse
@@ -137,6 +142,7 @@ func main() {
 	}
 	// Rewrite packages to their canonical paths
 	log.Printf("Rewriting import statements to canonical paths")
+	restrict := regexp.MustCompile(`// import ".*"`)
 
 	if err := filepath.Walk(".", func(fp string, fi os.FileInfo, err error) error {
 		// Abort if any error occurred, descend into directories
@@ -159,6 +165,7 @@ func main() {
 			if *fork != "" {
 				newblob = bytes.Replace(newblob, []byte("\""+string(root)+"/"), []byte("\""+*fork+"/"), -1)
 			}
+			newblob = restrict.ReplaceAll(newblob, []byte{})
 			if !bytes.Equal(oldblob, newblob) {
 				if err = ioutil.WriteFile(fp, newblob, 0); err != nil {
 					return err

@@ -164,6 +164,7 @@ func main() {
 			}
 			if *fork != "" {
 				newblob = bytes.Replace(newblob, []byte("\""+string(root)+"/"), []byte("\""+*fork+"/"), -1)
+				newblob = bytes.Replace(newblob, []byte("\""+string(root)+"\""), []byte("\""+*fork+"\""), -1)
 			}
 			newblob = restrict.ReplaceAll(newblob, []byte{})
 			if !bytes.Equal(oldblob, newblob) {

@@ -24,9 +24,18 @@ import (
 // do an extra rewrite after copying the code.
 var fork = flag.String("fork", "", "Optional root import path to rewrite to")
 
+// embed defines an optional list of import paths which should be embedded into
+// the sources directly instead of vendoring. This can be used to pin an external
+// dependency who's API is broken.
+var embed = flag.String("embed", "", "Comma-separated packages to force embedding")
+
 func main() {
 	flag.Parse()
 
+	embeds := make(map[string]bool)
+	for _, embed := range strings.Split(*embed, ",") {
+		embeds[embed] = true
+	}
 	// Create a temporary Go workspace to download canonical packages into
 	workspace, err := ioutil.TempDir("", "")
 	if err != nil {
@@ -102,7 +111,7 @@ func main() {
 			continue
 		}
 		// Any gx-based dependency should be embedded directly to allow library reuse
-		if shouldEmbed(workspace, path) {
+		if embeds[path] || shouldEmbed(workspace, path) {
 			if err := os.MkdirAll(filepath.Join("gxlibs", filepath.Dir(path)), 0700); err != nil {
 				log.Fatalf("Failed to create canonical embed path: %v", err)
 			}

@@ -169,7 +169,8 @@ func main() {
 			}
 			newblob := oldblob
 			for gxpath, gopath := range rewrite {
-				newblob = bytes.Replace(newblob, []byte("\""+gxpath), []byte("\""+gopath), -1)
+				newblob = bytes.Replace(newblob, []byte("\""+gxpath+"/"), []byte("\""+gopath+"/"), -1)
+				newblob = bytes.Replace(newblob, []byte("\""+gxpath+"\""), []byte("\""+gopath+"\""), -1)
 			}
 			if *fork != "" {
 				newblob = bytes.Replace(newblob, []byte("\""+string(root)+"/"), []byte("\""+*fork+"/"), -1)
